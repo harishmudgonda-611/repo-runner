@@ -1,0 +1,14 @@
+{
+  "name": "Repo Runner",
+  "short_name": "Repo Runner",
+  "description": "Save public GitHub web projects on your phone and run them offline.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14313a",
+  "theme_color": "#14313a",
+  "icons": [
+    {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"}
+  ]
+}

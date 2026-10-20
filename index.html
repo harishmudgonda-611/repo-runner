@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14313a">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<title>Repo Runner</title>
+<style>
+:root{--bg:#f4f6f5;--fg:#14232a;--mut:#5d6f75;--card:#fff;--line:#d5dddb;--acc:#0f6b78;--accfg:#fff;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1a1e;--fg:#e6eeee;--mut:#95a9ae;--card:#172429;--line:#27383e;--acc:#4cc2d1;--accfg:#06262b;--err:#ff8a80}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:560px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.5rem;margin:8px 0 4px;letter-spacing:-.01em}
+p.sub{margin:0 0 20px;color:var(--mut)}
+label{display:block;font-weight:600;margin-bottom:6px}
+input{width:100%;font:inherit;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:10px 14px;min-height:44px}
+button.primary{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600;width:100%;margin-top:10px}
+button:disabled{opacity:.6}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+#st{min-height:1.5em;margin:12px 0;font-size:.95rem;color:var(--mut);overflow-wrap:anywhere}
+#st.err{color:var(--err)}
+h2{font-size:1.05rem;margin:28px 0 10px}
+.repo{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px}
+.repo b{display:block;overflow-wrap:anywhere}
+.repo small{color:var(--mut)}
+.row{display:flex;gap:8px;margin-top:10px}
+.row button{flex:1}
+.row .go{background:var(--acc);color:var(--accfg);border-color:var(--acc);font-weight:600;flex:2}
+.empty{color:var(--mut);border:1px dashed var(--line);border-radius:10px;padding:16px}
+#inst{display:none;margin-top:8px;width:100%}
+#run{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);z-index:5}
+#run[hidden]{display:none}
+#bar{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line)}
+#bar span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#fr{flex:1;width:100%;border:0;background:#fff;margin-bottom:env(safe-area-inset-bottom)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Repo Runner</h1>
+  <p class="sub">Paste a public GitHub link. Static web projects are saved on your phone and open offline.</p>
+  <label for="u">GitHub link</label>
+  <input id="u" type="url" inputmode="url" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repo">
+  <button id="go" class="primary">Import and save</button>
+  <button id="inst">Install this app</button>
+  <div id="st" role="status" aria-live="polite"></div>
+  <h2>Saved projects</h2>
+  <div id="list"></div>
+  <p class="sub" style="font-size:.85rem">Works for projects made of ready-to-run files (HTML, CSS, JS, or a committed dist/build folder). Projects that need npm, Python or a server cannot run here. Only open projects you trust.</p>
+</main>
+
+<div id="run" hidden>
+  <div id="bar">
+    <button id="back">Back</button>
+    <span id="rn"></span>
+    <button id="rl" aria-label="Reload project">Reload</button>
+  </div>
+  <iframe id="fr" title="Project preview" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"></iframe>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const MIME={html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',ico:'image/x-icon',txt:'text/plain',md:'text/plain',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',mp3:'audio/mpeg',mp4:'video/mp4',wav:'audio/wav',wasm:'application/wasm',xml:'application/xml',map:'application/json',webmanifest:'application/manifest+json'};
+const mime=p=>MIME[(p.split('.').pop()||'').toLowerCase()]||'application/octet-stream';
+const MAX_FILES=800,MAX_BYTES=60*1024*1024;
+
+let _db;
+const open=()=>_db||(_db=new Promise((res,rej)=>{
+  const r=indexedDB.open('repo-runner',1);
+  r.onupgradeneeded=()=>{r.result.createObjectStore('files');r.result.createObjectStore('repos',{keyPath:'id'})};
+  r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);
+}));
+const req=r=>new Promise((res,rej)=>{r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const run=async(name,mode,fn)=>{const d=await open();return req(fn(d.transaction(name,mode).objectStore(name)))};
+
+function setStatus(msg,err){const s=$('#st');s.textContent=msg;s.className=err?'err':''}
+
+function parse(s){
+  s=s.trim();
+  const m=s.match(/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/tree\/([^\s?#]+))?(?:[\/?#]|$)/i)||s.match(/^([\w.-]+)\/([\w.-]+)$/);
+  return m?{owner:m[1],repo:m[2].replace(/\.git$/,''),branch:m[3]||''}:null;
+}
+
+async function gh(path){
+  const r=await fetch('https://api.github.com'+path,{headers:{Accept:'application/vnd.github+json'}});
+  if(r.status===403||r.status===429)throw new Error('GitHub limit reached for now. Wait a while, then try again.');
+  if(r.status===404)throw new Error('Repo not found. Check the link and make sure the repo is public.');
+  if(!r.ok)throw new Error('GitHub returned error '+r.status+'.');
+  return r.json();
+}
+
+async function removeRepo(id){
+  await run('files','readwrite',s=>s.delete(IDBKeyRange.bound(id+'/',id+'/\uffff')));
+  await run('repos','readwrite',s=>s.delete(id));
+}
+
+async function importRepo(p){
+  const {owner,repo}=p;
+  setStatus('Looking up '+owner+'/'+repo+'…');
+  const info=await gh(`/repos/${owner}/${repo}`);
+  const branch=p.branch||info.default_branch;
+  const tree=await gh(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  const blobs=tree.tree.filter(t=>t.type==='blob'&&!/(^|\/)(\.git|node_modules)(\/|$)/.test(t.path));
+  const has=pre=>blobs.some(b=>b.path===pre+'index.html');
+  const root=['dist/','build/','','docs/','public/'].find(has);
+  if(root===undefined)throw new Error('No index.html found. This project needs a build step, so it cannot run here.');
+  const list=blobs.filter(b=>b.path.startsWith(root));
+  const total=list.reduce((n,b)=>n+(b.size||0),0);
+  if(list.length>MAX_FILES)throw new Error('Too many files ('+list.length+'). Limit is '+MAX_FILES+'.');
+  if(total>MAX_BYTES)throw new Error('Project is too large ('+Math.round(total/1048576)+' MB). Limit is 60 MB.');
+  const id=(owner+'~'+repo).toLowerCase();
+  await removeRepo(id);
+  let i=0,done=0;
+  const enc=s=>s.split('/').map(encodeURIComponent).join('/');
+  const worker=async()=>{
+    while(i<list.length){
+      const f=list[i++];
+      const r=await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${enc(f.path)}`);
+      if(!r.ok)throw new Error('Could not download '+f.path+' (error '+r.status+').');
+      const buf=await r.arrayBuffer();
+      await run('files','readwrite',s=>s.put({buf,type:mime(f.path)},id+'/'+f.path.slice(root.length)));
+      setStatus('Downloading '+(++done)+' of '+list.length+' files…');
+    }
+  };
+  try{await Promise.all(Array.from({length:6},worker))}
+  catch(e){await removeRepo(id);throw e}
+  await run('repos','readwrite',s=>s.put({id,owner,repo,branch,root,count:list.length,size:total,added:Date.now()}));
+  return list.length;
+}
+
+async function render(){
+  const repos=(await run('repos','readonly',s=>s.getAll())).sort((a,b)=>b.added-a.added);
+  const box=$('#list');box.textContent='';
+  if(!repos.length){const d=document.createElement('div');d.className='empty';d.textContent='Nothing saved yet. Paste a GitHub link above to add your first project.';box.append(d);return}
+  for(const r of repos){
+    const c=document.createElement('div');c.className='repo';
+    const b=document.createElement('b');b.textContent=r.owner+'/'+r.repo;
+    const sm=document.createElement('small');
+    sm.textContent=r.count+' files, '+(r.size/1048576).toFixed(1)+' MB, branch '+r.branch+(r.root?', from '+r.root:'');
+    const row=document.createElement('div');row.className='row';
+    const go=document.createElement('button');go.className='go';go.textContent='Open';go.onclick=()=>runRepo(r);
+    const up=document.createElement('button');up.textContent='Update';up.onclick=()=>doImport('https://github.com/'+r.owner+'/'+r.repo+'/tree/'+r.branch);
+    const del=document.createElement('button');del.textContent='Delete';
+    del.onclick=async()=>{if(confirm('Delete '+r.owner+'/'+r.repo+' from this phone?')){await removeRepo(r.id);render()}};
+    row.append(go,up,del);c.append(b,sm,row);box.append(c);
+  }
+}
+
+async function doImport(text,fromUpdate){
+  const p=parse(text);
+  if(!p){setStatus('That does not look like a GitHub link. Use https://github.com/owner/repo',true);return}
+  const btn=$('#go');btn.disabled=true;
+  try{
+    const n=await importRepo(p);
+    setStatus('Saved '+n+' files. Tap Open to run it.');
+    $('#u').value='';
+  }catch(e){
+    setStatus(e.message&&e.message!=='Failed to fetch'?e.message:'Network problem. Check your connection and try again.',true);
+  }
+  btn.disabled=false;render();
+}
+
+let cur='';
+function runRepo(r){
+  if(!navigator.serviceWorker||!navigator.serviceWorker.controller){setStatus('The offline engine is still starting. Reload this page once, then tap Open again.',true);return}
+  $('#rn').textContent=r.owner+'/'+r.repo;
+  cur=new URL('r/'+r.id+'/',location.href).href;
+  $('#fr').src=cur;$('#run').hidden=false;
+}
+$('#back').onclick=()=>{$('#run').hidden=true;$('#fr').src='about:blank'};
+$('#rl').onclick=()=>{try{$('#fr').contentWindow.location.reload()}catch(e){$('#fr').src=cur}};
+$('#go').onclick=()=>doImport($('#u').value);
+$('#u').addEventListener('keydown',e=>{if(e.key==='Enter')doImport($('#u').value)});
+
+let ip;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();ip=e;$('#inst').style.display='block'});
+$('#inst').onclick=async()=>{if(ip){ip.prompt();await ip.userChoice;ip=null;$('#inst').style.display='none'}};
+
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>setStatus('Offline engine could not start. This page must be opened over https.',true));
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+render();
+</script>
+</body>
+</html>
