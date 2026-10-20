@@ -1,4 +1,4 @@
-const SHELL='repo-runner-shell-v1';
+const SHELL='repo-runner-shell-v2';
 const FILES=['./','index.html','manifest.json','icon.svg'];
 
 let _db;
@@ -58,6 +58,11 @@ async function serveRepo(p,basePath){
     const html=new TextDecoder().decode(rec.buf)
       .replace(/(\s(?:src|href|action)=["'])\/(?!\/)/gi,'$1'+prefix);
     return new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8'}});
+  }
+  if(rec.type==='text/css'){
+    const prefix=basePath+'r/'+encodeURIComponent(id)+'/';
+    const css=new TextDecoder().decode(rec.buf).replace(/url\((["']?)\/(?!\/)/g,'url($1'+prefix);
+    return new Response(css,{headers:{'Content-Type':'text/css; charset=utf-8'}});
   }
   return new Response(rec.buf,{headers:{'Content-Type':rec.type}});
 }

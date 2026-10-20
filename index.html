@@ -49,10 +49,66 @@ h2{font-size:1.05rem;margin:28px 0 10px}
   <button id="go" class="primary">Import and save</button>
   <button id="inst">Install this app</button>
   <div id="st" role="status" aria-live="polite"></div>
+  <section id="fix" class="repo" hidden>
+    <b>This project needs a build first</b>
+    <p style="margin:6px 0">GitHub can build it for free. Do this once per project:</p>
+    <ol style="padding-left:20px;margin:0 0 10px">
+      <li>Open the project on GitHub, tap <b>Fork</b>, and create the fork.</li>
+      <li>In your fork tap <b>Add file</b>, then <b>Create new file</b>. Name it <code>.github/workflows/build.yml</code>, paste the code (button below), and tap <b>Commit changes</b>.</li>
+      <li>Open the <b>Actions</b> tab. If asked, enable workflows. Pick <b>Build for Repo Runner</b>, then <b>Run workflow</b>.</li>
+      <li>After about 2 minutes, paste <code>https://github.com/YOURNAME/<span id="fxr">repo</span>/tree/built</code> in the box above.</li>
+    </ol>
+    <button id="cp" class="primary" style="margin-top:0">Copy build code</button>
+  </section>
   <h2>Saved projects</h2>
   <div id="list"></div>
   <p class="sub" style="font-size:.85rem">Works for projects made of ready-to-run files (HTML, CSS, JS, or a committed dist/build folder). Projects that need npm, Python or a server cannot run here. Only open projects you trust.</p>
 </main>
+
+<script type="text/plain" id="wf">name: Build for Repo Runner
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: |
+          if [ -f pnpm-lock.yaml ]; then npm i -g pnpm && pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile
+          elif [ -f package-lock.json ]; then npm ci
+          else npm install; fi
+      - name: Build
+        env:
+          PUBLIC_URL: .
+          CI: "false"
+        run: |
+          if ls vite.config.* >/dev/null 2>&1; then
+            npx vite build --base=./
+          else
+            npm run build
+          fi
+      - name: Publish built files to the built branch
+        run: |
+          OUT=""
+          for d in dist build out; do
+            if [ -f "$d/index.html" ]; then OUT="$d"; break; fi
+          done
+          if [ -z "$OUT" ]; then echo "No build output with index.html found"; exit 1; fi
+          cd "$OUT"
+          git init -b built
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Built files for Repo Runner"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" built
+</script>
 
 <div id="run" hidden>
   <div id="bar">
@@ -108,7 +164,7 @@ async function importRepo(p){
   const blobs=tree.tree.filter(t=>t.type==='blob'&&!/(^|\/)(\.git|node_modules)(\/|$)/.test(t.path));
   const has=pre=>blobs.some(b=>b.path===pre+'index.html');
   const root=['dist/','build/','','docs/','public/'].find(has);
-  if(root===undefined)throw new Error('No index.html found. This project needs a build step, so it cannot run here.');
+  if(root===undefined){const e=new Error('No ready-to-run index.html found in this project.');e.needsBuild=true;throw e}
   const list=blobs.filter(b=>b.path.startsWith(root));
   const total=list.reduce((n,b)=>n+(b.size||0),0);
   if(list.length>MAX_FILES)throw new Error('Too many files ('+list.length+'). Limit is '+MAX_FILES+'.');
@@ -154,12 +210,13 @@ async function render(){
 async function doImport(text,fromUpdate){
   const p=parse(text);
   if(!p){setStatus('That does not look like a GitHub link. Use https://github.com/owner/repo',true);return}
-  const btn=$('#go');btn.disabled=true;
+  const btn=$('#go');btn.disabled=true;$('#fix').hidden=true;
   try{
     const n=await importRepo(p);
     setStatus('Saved '+n+' files. Tap Open to run it.');
     $('#u').value='';
   }catch(e){
+    if(e.needsBuild){$('#fxr').textContent=p.repo;$('#fix').hidden=false}
     setStatus(e.message&&e.message!=='Failed to fetch'?e.message:'Network problem. Check your connection and try again.',true);
   }
   btn.disabled=false;render();
@@ -175,6 +232,7 @@ function runRepo(r){
 $('#back').onclick=()=>{$('#run').hidden=true;$('#fr').src='about:blank'};
 $('#rl').onclick=()=>{try{$('#fr').contentWindow.location.reload()}catch(e){$('#fr').src=cur}};
 $('#go').onclick=()=>doImport($('#u').value);
+$('#cp').onclick=async()=>{try{await navigator.clipboard.writeText($('#wf').textContent.trim());setStatus('Build code copied. Paste it into the new file on GitHub.')}catch(e){setStatus('Could not copy automatically. Long-press the text to copy it manually.',true)}};
 $('#u').addEventListener('keydown',e=>{if(e.key==='Enter')doImport($('#u').value)});
 
 let ip;
